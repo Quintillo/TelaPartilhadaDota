@@ -360,6 +360,17 @@ export class ComputerVisionEngine {
       console.warn('Speech synthesis failed:', e);
     }
   }
+
+  /**
+   * Stop any active speech synthesis immediately
+   */
+  stopSpeaking(): void {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch (_) {}
+    }
+  }
 }
 
 export const cvEngine = new ComputerVisionEngine();

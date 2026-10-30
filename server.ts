@@ -34,6 +34,169 @@ interface CacheEntry {
 const matchCache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 1000 * 60 * 30; // 30 mins
 
+// Quota and Rate Limit Tracker for Gemini Free Tier
+let quotaExceededUntil = 0;
+let lastQuotaLogTime = 0;
+
+function isQuotaExceededError(err: any): boolean {
+  const msg = (err?.message || '') + JSON.stringify(err || '');
+  return (
+    msg.includes('429') ||
+    msg.includes('RESOURCE_EXHAUSTED') ||
+    msg.includes('quota') ||
+    msg.includes('Quota exceeded') ||
+    err?.status === 429
+  );
+}
+
+function registerQuotaExhausted(context: string) {
+  // Cooldown for 15 minutes before re-checking remote API to avoid hammering exhausted quota and spamming logs
+  quotaExceededUntil = Date.now() + 15 * 60 * 1000;
+  const now = Date.now();
+  if (now - lastQuotaLogTime > 60 * 1000) {
+    lastQuotaLogTime = now;
+    console.warn(`[Dota AI Coach] Cota da API Gemini atingida em "${context}". O Treinador ativou automaticamente o Motor de Heurísticas Táticas Competitivas offline.`);
+  }
+}
+
+function generateProTacticalFrameDirectives({
+  heroName = 'Juggernaut',
+  heroId = 8,
+  playerRole = 'Carry (Pos 1)',
+  enemyHeroes = ['Axe', 'Storm Spirit', 'Lion'],
+  gameTime = '12:45',
+}: any) {
+  const enemies = Array.isArray(enemyHeroes) ? enemyHeroes : ['Axe', 'Storm Spirit', 'Lion'];
+  const hasAxe = enemies.some((e: string) => /axe/i.test(e));
+  const hasLion = enemies.some((e: string) => /lion|shaman|shadow demon/i.test(e));
+  const hasInvis = enemies.some((e: string) => /riki|bounty|clinkz|nyx|weaver/i.test(e));
+  const hasRegen = enemies.some((e: string) => /necro|bristle|alchemist|slark|morph/i.test(e));
+  const hasSilence = enemies.some((e: string) => /silencer|drow|death prophet|bloodseeker|night stalker/i.test(e));
+
+  let recommendedItem = {
+    name: 'Black King Bar',
+    reason: `Essencial para ignorar o controle de grupo de ${enemies.slice(0, 2).join(' e ')} nas teamfights.`,
+    cost: 4050,
+    currentProgress: 68,
+  };
+
+  if (hasInvis) {
+    recommendedItem = {
+      name: 'Dust of Appearance & Sentry Ward',
+      reason: `Detecção obrigatória para punir ${enemies.find((e: string) => /riki|bounty|clinkz|nyx|weaver/i.test(e)) || 'invisibilidade'}.`,
+      cost: 130,
+      currentProgress: 100,
+    };
+  } else if (hasRegen) {
+    recommendedItem = {
+      name: 'Spirit Vessel',
+      reason: `Corta 45% da cura de ${enemies.find((e: string) => /necro|bristle|alchemist|slark|morph/i.test(e)) || 'regeneração'} com dano percentual contínuo.`,
+      cost: 2840,
+      currentProgress: 75,
+    };
+  } else if (hasSilence && (/Anti-Mage|Juggernaut|Phantom|Faceless/i.test(heroName))) {
+    recommendedItem = {
+      name: 'Manta Style',
+      reason: `Dispel instantâneo contra silences para liberar o uso das suas habilidades de fuga.`,
+      cost: 4600,
+      currentProgress: 80,
+    };
+  } else if (/Axe|Centaur|Tidehunter|Slardar|Magnus/i.test(heroName)) {
+    recommendedItem = {
+      name: 'Blink Dagger',
+      reason: `Iniciação instantânea de longo alcance para travar os alvos prioritários na luta.`,
+      cost: 2250,
+      currentProgress: 90,
+    };
+  }
+
+  const cues = [
+    {
+      callout: `Cuidado ${heroName}, rotação inimiga vindo do rio! Recue para a torre agora!`,
+      urgency: 'CRITICAL' as const,
+      directive: `Inimigos desapareceram do minimapa. Saia da frente da wave de creeps e jogue pelo alcance da sua torre ou do Triângulo Seguro.`,
+      currentZone: 'Rio / Rota Avançada',
+      recommendedZone: 'Torre Aliada / Triângulo',
+      safety: 25,
+      move: 'Recuo Imediato para cobertura aliada',
+      pings: [
+        { x: 35, y: 75, type: 'player', label: `${heroName} (Você)` },
+        { x: 22, y: 60, type: 'safe_move', label: 'Zona Segura (Triângulo)' },
+        { x: 50, y: 50, type: 'danger', label: 'Possível Inimigo no Rio' },
+      ],
+      threat: `Heróis inimigos sumidos do mapa com potencial de Smoke Gank.`,
+      powerSpike: `Não force brigas antes de fechar ${recommendedItem.name}.`,
+    },
+    {
+      callout: `Excelente timing de farm! Limpe a wave rápido e pegue a runa do rio!`,
+      urgency: 'OPPORTUNITY' as const,
+      directive: `A wave está equilibrada sob sua visão. Use sua habilidade em área para matar os magos e conteste a Runa de Poder com o suporte.`,
+      currentZone: 'Rota Segura',
+      recommendedZone: 'Runa do Rio / Selva',
+      safety: 85,
+      move: 'Avance agressivo e conteste o rio com seu time',
+      pings: [
+        { x: 35, y: 75, type: 'player', label: `${heroName} (Você)` },
+        { x: 38, y: 38, type: 'objective', label: 'Runa de Poder do Rio' },
+        { x: 42, y: 45, type: 'safe_move', label: 'Posição do Suporte' },
+      ],
+      threat: `Inimigos focados na rota oposta; janela perfeita para objetivo.`,
+      powerSpike: `Aproveite a vantagem temporária para empurrar e conquistar visão.`,
+    },
+    {
+      callout: `Atenção aos timers: Runa de Sabedoria e empilhamento de acampamentos em breve!`,
+      urgency: 'WARNING' as const,
+      directive: `Puxe o aggro dos creeps no segundo :53 de cada minuto para empilhar o campo neutro ou avance para garantir a Runa de Sabedoria na borda.`,
+      currentZone: 'Borda da Selva',
+      recommendedZone: 'Altar de Sabedoria / Acampamento Neutro',
+      safety: 65,
+      move: 'Puxe o aggro e sincronize o timing do relógio',
+      pings: [
+        { x: 28, y: 70, type: 'player', label: `${heroName}` },
+        { x: 15, y: 80, type: 'objective', label: 'Runa de Sabedoria (XP)' },
+        { x: 25, y: 65, type: 'safe_move', label: 'Acampamento Neutro' },
+      ],
+      threat: `Possível contestação inimiga no altar de XP.`,
+      powerSpike: `Garantir o XP acelera os talentos cruciais da árvore de habilidades.`,
+    },
+    {
+      callout: `${heroName}, foco no próximo item core (${recommendedItem.name})! Evite lutas no escuro.`,
+      urgency: 'SAFE' as const,
+      directive: `Seu herói precisa fechar ${recommendedItem.name} antes de aceitar teamfights grandes. Alterne entre a wave e os dois campos mais próximos.`,
+      currentZone: 'Selva Aliada',
+      recommendedZone: 'Campos Neutros Seguros',
+      safety: 90,
+      move: 'Farming eficiente sem se expor além do rio',
+      pings: [
+        { x: 22, y: 60, type: 'player', label: `${heroName}` },
+        { x: 18, y: 65, type: 'safe_move', label: 'Rota de Farm Seguro' },
+        { x: 50, y: 50, type: 'ward', label: 'Manter Ward no Rio' },
+      ],
+      threat: `Risco baixo desde que você mantenha a disciplina no minimapa.`,
+      powerSpike: `Faltam poucos minutos de farm para o pico definitivo de poder.`,
+    },
+  ];
+
+  const index = Math.floor((Date.now() / 7000) % cues.length);
+  const selected = cues[index];
+
+  return {
+    voiceCallout: selected.callout,
+    urgency: selected.urgency,
+    tacticalDirective: selected.directive,
+    recommendedItem,
+    mapNavigation: {
+      currentZone: selected.currentZone,
+      recommendedZone: selected.recommendedZone,
+      safetyRating: selected.safety,
+      movementAdvice: selected.move,
+    },
+    minimapPings: selected.pings,
+    enemyThreatSummary: selected.threat,
+    powerSpikeAlert: selected.powerSpike,
+  };
+}
+
 function generateFallbackMatch(matchId: string, preferredHeroId: number = 8) {
   const isRadiantWin = matchId.endsWith('3') || matchId.endsWith('5') || matchId.endsWith('7');
   const heroIdNum = Number(preferredHeroId) || 8;
@@ -228,45 +391,56 @@ Retorne EXCLUSIVAMENTE um objeto JSON com o seguinte schema:
 }
 `;
 
-    // Attempt Gemini 3.8 Flash analysis with image payload if available
+    // Check if Gemini Free Tier quota is currently exhausted
+    const isQuotaDepleted = Date.now() < quotaExceededUntil;
     let responseText = '';
-    const modelsToTry = ['gemini-3.8-flash', 'gemini-flash-latest'];
+    let quotaExceededThisRequest = isQuotaDepleted;
 
-    for (const model of modelsToTry) {
-      try {
-        const contents: any[] = [];
-        if (cleanBase64 && cleanBase64.length > 500) {
-          contents.push({
-            inlineData: {
-              mimeType: 'image/jpeg',
-              data: cleanBase64,
+    if (!isQuotaDepleted) {
+      const modelsToTry = ['gemini-3.8-flash'];
+
+      for (const model of modelsToTry) {
+        try {
+          const contents: any[] = [];
+          if (cleanBase64 && cleanBase64.length > 500) {
+            contents.push({
+              inlineData: {
+                mimeType: 'image/jpeg',
+                data: cleanBase64,
+              },
+            });
+          }
+          contents.push(promptText);
+
+          const aiPromise = ai.models.generateContent({
+            model,
+            contents,
+            config: {
+              systemInstruction: 'Você é o motor de IA ao vivo do Dota AI Coach. Retorne sempre JSON válido e respostas cirúrgicas de alto nível para jogadores competitivos.',
+              responseMimeType: 'application/json',
+              temperature: 0.5,
             },
           });
+
+          // Timeout guard (8s)
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Timeout na análise de visão da IA')), 8000)
+          );
+
+          const aiResponse: any = await Promise.race([aiPromise, timeoutPromise]);
+          if (aiResponse && aiResponse.text) {
+            responseText = aiResponse.text;
+            break;
+          }
+        } catch (err: any) {
+          if (isQuotaExceededError(err)) {
+            registerQuotaExhausted('live frame analysis');
+            quotaExceededThisRequest = true;
+            break; // Stop trying other models that share the same exhausted quota
+          } else {
+            console.warn(`Model ${model} notice during live analysis: ${err.message}`);
+          }
         }
-        contents.push(promptText);
-
-        const aiPromise = ai.models.generateContent({
-          model,
-          contents,
-          config: {
-            systemInstruction: 'Você é o motor de IA ao vivo do Dota AI Coach. Retorne sempre JSON válido e respostas cirúrgicas de alto nível para jogadores competitivos.',
-            responseMimeType: 'application/json',
-            temperature: 0.5,
-          },
-        });
-
-        // Timeout guard (9s)
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Timeout na análise de visão da IA')), 9000)
-        );
-
-        const aiResponse: any = await Promise.race([aiPromise, timeoutPromise]);
-        if (aiResponse && aiResponse.text) {
-          responseText = aiResponse.text;
-          break;
-        }
-      } catch (err: any) {
-        console.warn(`Model ${model} failed live analysis: ${err.message}`);
       }
     }
 
@@ -284,79 +458,26 @@ Retorne EXCLUSIVAMENTE um objeto JSON com o seguinte schema:
       }
     }
 
-    // High quality intelligent dynamic fallback if Gemini API is temporarily rate-limited
+    // High quality intelligent dynamic fallback if Gemini API is temporarily rate-limited or quota is exceeded
     if (!parsed) {
-      const liveCues = [
-        {
-          callout: `Cuidado ${heroName}, rotação inimiga vindo do rio! Recue para a torre agora!`,
-          urgency: 'CRITICAL' as const,
-          directive: `Inimigos desapareceram do minimapa. Saia da frente da wave de creeps e jogue pelo alcance da sua torre ou campo neutro.`,
-          currentZone: 'Rio / Rota Avançada',
-          recommendedZone: 'Torre Aliada / Triângulo',
-          safety: 25,
-          move: 'Recuo Imediato para cobertura aliada',
-        },
-        {
-          callout: `Excelente timing de farm! Limpe a wave rápido e pegue a runa do rio!`,
-          urgency: 'OPPORTUNITY' as const,
-          directive: `A wave está sob controle. Avance com sua habilidade de dano em área para limpar os creeps e conteste a Runa de Poder com o suporte.`,
-          currentZone: 'Rota Segura',
-          recommendedZone: 'Runa do Rio / Selva',
-          safety: 85,
-          move: 'Avance agressivo e conteste o rio',
-        },
-        {
-          callout: `Atenção ao relógio: momento de puxar os creeps para perto da torre!`,
-          urgency: 'WARNING' as const,
-          directive: `Use o Creep Aggro clicando com botão direito no herói inimigo para trazer os creeps adversários para perto dos seus magos.`,
-          currentZone: 'Equilíbrio de Rota',
-          recommendedZone: 'Sob sua rampa',
-          safety: 65,
-          move: 'Puxe o aggro e congele a rota',
-        },
-        {
-          callout: `${heroName}, foco no próximo item core! Evite lutas desnecessárias agora.`,
-          urgency: 'SAFE' as const,
-          directive: `Seu herói precisa fechar o item de pico antes de aceitar teamfights no escuro. Mantenha a rotação entre wave e campo grande.`,
-          currentZone: 'Selva Aliada',
-          recommendedZone: 'Campos Neutros Seguros',
-          safety: 90,
-          move: 'Farming seguro e split push controlado',
-        },
-      ];
-
-      const cue = liveCues[Math.floor(Math.random() * liveCues.length)];
-
-      parsed = {
-        voiceCallout: cue.callout,
-        urgency: cue.urgency,
-        tacticalDirective: cue.directive,
-        recommendedItem: {
-          name: heroName === 'Anti-Mage' ? 'Manta Style' : 'Black King Bar',
-          reason: `Item crucial contra o controle de grupo e habilidades de ${enemyHeroes.slice(0, 2).join(' e ')}.`,
-          cost: 4050,
-          currentProgress: 75,
-        },
-        mapNavigation: {
-          currentZone: cue.currentZone,
-          recommendedZone: cue.recommendedZone,
-          safetyRating: cue.safety,
-          movementAdvice: cue.move,
-        },
-        minimapPings: [
-          { x: 35, y: 75, type: 'player', label: `${heroName} (Você)` },
-          { x: 22, y: 60, type: 'safe_move', label: 'Zona Segura (Triângulo)' },
-          { x: 50, y: 50, type: 'danger', label: 'Possível Inimigo no Rio' },
-          { x: 38, y: 38, type: 'objective', label: 'Runa do Rio' },
-        ],
-        enemyThreatSummary: `Heróis inimigos (${enemyHeroes[0] || 'Inimigo'}) possuem potencial de gank rápido se você avançar sem visão.`,
-        powerSpikeAlert: 'Priorize seu próximo item core antes de aceitar lutas no escuro.',
-      };
+      parsed = generateProTacticalFrameDirectives({
+        heroName,
+        heroId,
+        playerRole,
+        enemyHeroes,
+        alliedHeroes,
+        gameTime,
+        currentItems,
+        currentNetWorth,
+        coachStyle,
+      });
     }
 
     res.json({
       success: true,
       timestamp: Date.now(),
+      quotaExceeded: quotaExceededThisRequest,
+      mode: responseText ? 'gemini_vision' : 'tactical_heuristics',
       data: parsed,
     });
   } catch (err: any) {
@@ -419,45 +540,56 @@ Idioma da resposta: ${language === 'pt-BR' ? 'Português do Brasil (pt-BR)' : 'I
       config.tools = [{ googleSearch: {} }];
     }
 
-    try {
-      const aiResponse = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents,
-        config,
-      });
+    const isQuotaDepleted = Date.now() < quotaExceededUntil;
 
-      const responseText = aiResponse.text || 'Desculpe, não consegui obter uma resposta no momento.';
+    if (!isQuotaDepleted) {
+      try {
+        const aiResponse = await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents,
+          config,
+        });
 
-      // Extract Audio Summary if present
-      let audioSummary = '';
-      const audioMatch = responseText.match(/\[AUDIO_SUMMARY:\s*([^\]]+)\]/i);
-      if (audioMatch) {
-        audioSummary = audioMatch[1].trim();
-      } else {
-        audioSummary = responseText.split('.')[0] + '.';
+        const responseText = aiResponse.text || 'Desculpe, não consegui obter uma resposta no momento.';
+
+        // Extract Audio Summary if present
+        let audioSummary = '';
+        const audioMatch = responseText.match(/\[AUDIO_SUMMARY:\s*([^\]]+)\]/i);
+        if (audioMatch) {
+          audioSummary = audioMatch[1].trim();
+        } else {
+          audioSummary = responseText.split('.')[0] + '.';
+        }
+
+        const cleanText = responseText.replace(/\[AUDIO_SUMMARY:\s*[^\]]+\]/gi, '').trim();
+
+        // Extract Grounding Chunks (URLs and titles)
+        const groundingChunks = aiResponse.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+        const webSearchQueries = aiResponse.candidates?.[0]?.groundingMetadata?.webSearchQueries || [];
+
+        const sources = groundingChunks
+          .map((chunk: any) => chunk.web ? { title: chunk.web.title, url: chunk.web.uri } : null)
+          .filter(Boolean);
+
+        res.json({
+          success: true,
+          text: cleanText,
+          audioSummary,
+          sources,
+          webSearchQueries,
+          quotaExceeded: false,
+        });
+        return;
+      } catch (genErr: any) {
+        if (isQuotaExceededError(genErr)) {
+          registerQuotaExhausted('coach chat');
+        } else {
+          console.warn('Gemini chat notice:', genErr.message);
+        }
       }
+    }
 
-      const cleanText = responseText.replace(/\[AUDIO_SUMMARY:\s*[^\]]+\]/gi, '').trim();
-
-      // Extract Grounding Chunks (URLs and titles)
-      const groundingChunks = aiResponse.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-      const webSearchQueries = aiResponse.candidates?.[0]?.groundingMetadata?.webSearchQueries || [];
-
-      const sources = groundingChunks
-        .map((chunk: any) => chunk.web ? { title: chunk.web.title, url: chunk.web.uri } : null)
-        .filter(Boolean);
-
-      res.json({
-        success: true,
-        text: cleanText,
-        audioSummary,
-        sources,
-        webSearchQueries,
-      });
-    } catch (genErr: any) {
-      console.warn('Gemini generateContent quota or rate limit, generating expert tactical fallback response:', genErr.message);
-
-      // Smart domain fallback based on question keywords
+    // Smart domain fallback based on question keywords
       const lower = message.toLowerCase();
       let answer = '';
       let audioSummary = '';
@@ -522,8 +654,8 @@ Em relação a sua dúvida: **"${message}"**:
           `Dota 2 ${heroContext} build guide patch`,
           `Dota2ProTracker ${heroContext} counters`,
         ],
+        quotaExceeded: true,
       });
-    }
   } catch (err: any) {
     console.error('Error in /api/coach/chat:', err);
     res.status(500).json({
@@ -642,26 +774,34 @@ Gere um relatório JSON estrito com o seguinte schema:
 `;
 
     let generatedData: any = null;
-    try {
-      const aiResponse = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        config: {
-          responseMimeType: 'application/json',
-          temperature: 0.4,
-        },
-      });
+    const isQuotaDepleted = Date.now() < quotaExceededUntil;
 
-      if (aiResponse.text) {
-        try {
-          generatedData = JSON.parse(aiResponse.text.trim());
-        } catch (_) {
-          const matchJson = aiResponse.text.match(/\{[\s\S]*\}/);
-          if (matchJson) generatedData = JSON.parse(matchJson[0]);
+    if (!isQuotaDepleted) {
+      try {
+        const aiResponse = await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          config: {
+            responseMimeType: 'application/json',
+            temperature: 0.4,
+          },
+        });
+
+        if (aiResponse.text) {
+          try {
+            generatedData = JSON.parse(aiResponse.text.trim());
+          } catch (_) {
+            const matchJson = aiResponse.text.match(/\{[\s\S]*\}/);
+            if (matchJson) generatedData = JSON.parse(matchJson[0]);
+          }
+        }
+      } catch (aiErr: any) {
+        if (isQuotaExceededError(aiErr)) {
+          registerQuotaExhausted('replay analysis');
+        } else {
+          console.warn('Gemini replay analysis notice:', aiErr.message);
         }
       }
-    } catch (aiErr: any) {
-      console.warn('Gemini replay analysis quota/error notice:', aiErr.message);
     }
 
     if (!generatedData) {

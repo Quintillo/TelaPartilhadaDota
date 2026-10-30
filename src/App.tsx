@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Header, AppTab } from './components/Header';
 import { LiveScreenMonitor } from './components/LiveScreenMonitor';
 import { LiveTacticalFeed, LiveCoachingCallout } from './components/LiveTacticalFeed';
@@ -88,16 +88,17 @@ export default function App() {
   const [analysisIntervalSec, setAnalysisIntervalSec] = useState<number>(5);
   const [isAnalyzingFrame, setIsAnalyzingFrame] = useState<boolean>(false);
   const [isRealLiveCapturing, setIsRealLiveCapturing] = useState<boolean>(false);
+  const [isHeuristicMode, setIsHeuristicMode] = useState<boolean>(false);
 
-  // Live Coaching Output from Gemini
+  // Live Coaching Output from Gemini (Silenced on initialization until user shares screen)
   const [currentCallout, setCurrentCallout] = useState<LiveCoachingCallout | null>({
-    id: 'initial_live_coach',
+    id: 'standby_coach',
     timestamp: '00:00',
-    voiceCallout: 'Treinador de IA pronto! Conecte sua tela do Dota 2 para começar o acompanhamento ao vivo.',
+    voiceCallout: '',
     urgency: 'SAFE',
-    tacticalDirective: 'Clique no botão verde "Conectar Tela do Jogo ao Vivo" para compartilhar sua janela do Dota 2. A IA analisará seus movimentos, minimapa e inventário em tempo real.',
-    enemyThreatSummary: 'Aguardando início da captura de tela ao vivo do jogador.',
-    powerSpikeAlert: 'Priorize farm seguro nos primeiros minutos de jogo.',
+    tacticalDirective: 'Treinador em Espera: Clique no botão verde "Conectar Tela do Jogo ao Vivo" para compartilhar sua janela do Dota 2. A IA acompanhará seus movimentos, minimapa e inventário em tempo real.',
+    enemyThreatSummary: 'Aguardando conexão com a tela do Dota 2.',
+    powerSpikeAlert: 'Abra o Dota 2 e conecte a tela para o Coach começar a orientar sua partida.',
   });
 
   const [calloutHistory, setCalloutHistory] = useState<LiveCoachingCallout[]>([]);
@@ -156,10 +157,40 @@ export default function App() {
     return () => clearTimeout(timer);
   }, []);
 
-  // Speaks callouts whenever currentCallout changes
+  const lastSpokenCalloutRef = useRef<string>('');
+  const lastSpokenTimeRef = useRef<number>(0);
+
+  // Speaks callouts whenever currentCallout changes - ONLY if live screen is active or explicitly requested
   const triggerVoiceCallout = useCallback(
-    (text: string, urgencyLevel: 'CRITICAL' | 'WARNING' | 'OPPORTUNITY' | 'SAFE' = 'WARNING') => {
-      if (!voiceEnabled || !text) return;
+    (
+      text: string,
+      urgencyLevel: 'CRITICAL' | 'WARNING' | 'OPPORTUNITY' | 'SAFE' = 'WARNING',
+      force: boolean = false
+    ) => {
+      if (!voiceEnabled || !text || !text.trim()) return;
+
+      // CRITICAL: The AI coach must NEVER speak alone without user sharing their screen!
+      if (!isRealLiveCapturing && !force) {
+        return;
+      }
+
+      // Smart coach debouncing (feels like a real person, not an automated robot spamming)
+      const now = Date.now();
+      const timeSinceLastSpoken = now - lastSpokenTimeRef.current;
+      const isDuplicate = lastSpokenCalloutRef.current.trim().toLowerCase() === text.trim().toLowerCase();
+
+      // Avoid repeating identical phrases within 25 seconds unless urgent
+      if (isDuplicate && timeSinceLastSpoken < 25000 && urgencyLevel !== 'CRITICAL' && !force) {
+        return;
+      }
+
+      // If safe urgency and coach spoke within last 12 seconds, let the player focus
+      if (urgencyLevel === 'SAFE' && timeSinceLastSpoken < 12000 && !force) {
+        return;
+      }
+
+      lastSpokenCalloutRef.current = text;
+      lastSpokenTimeRef.current = now;
 
       if (urgencyLevel === 'CRITICAL') {
         cvEngine.playAlertTone('critical');
@@ -176,7 +207,7 @@ export default function App() {
         lang: 'pt-BR',
       });
     },
-    [voiceEnabled, voiceRate]
+    [voiceEnabled, voiceRate, isRealLiveCapturing]
   );
 
   // Toggle voice with shortcut feedback
@@ -184,8 +215,8 @@ export default function App() {
     setVoiceEnabled((prev) => {
       const next = !prev;
       showToast(next ? 'Voz do Coach ATIVADA' : 'Voz do Coach SILENCIADA (Mudo)');
-      if (next) {
-        cvEngine.speakCallout('Voz ativada', { enabled: true, rate: 1.2, lang: 'pt-BR' });
+      if (!next) {
+        cvEngine.stopSpeaking();
       }
       return next;
     });
@@ -200,7 +231,7 @@ export default function App() {
     });
   }, [showToast]);
 
-  // Select demo scenario
+  // Select demo scenario (for manual test inspection without auto-speaking)
   const handleSelectScenario = (scenario: DemoScenario) => {
     setSelectedScenario(scenario);
     setActiveHeroId(scenario.heroId);
@@ -224,7 +255,7 @@ export default function App() {
     setCurrentCallout(newCallout);
     setCalloutHistory((prev) => [newCallout, ...prev.slice(0, 15)]);
 
-    triggerVoiceCallout(scenario.expectedCallout, scenario.urgency);
+    // Do NOT automatically speak demo scenario unless user is in live mode or clicks replay
   };
 
   // Send Frame to Server (Gemini 3.8 Flash Vision)
@@ -252,6 +283,12 @@ export default function App() {
 
       const result = await response.json();
       if (result && result.success && result.data) {
+        if (result.quotaExceeded) {
+          setIsHeuristicMode(true);
+        } else if (result.mode === 'gemini_vision') {
+          setIsHeuristicMode(false);
+        }
+
         const d = result.data;
         const now = new Date();
         const timeStr = `${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
@@ -284,7 +321,8 @@ export default function App() {
           setRecommendedItem(d.recommendedItem);
         }
 
-        triggerVoiceCallout(newCallout.voiceCallout, newCallout.urgency);
+        // Only speak callout if live game screen is being analyzed or user requested it
+        triggerVoiceCallout(newCallout.voiceCallout, newCallout.urgency, isRealLive);
       }
     } catch (err: any) {
       console.warn('Frame analysis error:', err.message);
@@ -589,6 +627,26 @@ export default function App() {
               </div>
             )}
 
+            {/* Offline Tactical Engine Notice (if API quota limit reached) */}
+            {isHeuristicMode && (
+              <div className="p-3.5 rounded-2xl bg-amber-950/30 border border-amber-500/40 flex items-center justify-between gap-3 text-xs text-amber-200 shadow-md">
+                <div className="flex items-center gap-2.5">
+                  <span className="p-1.5 rounded-lg bg-amber-500/20 text-amber-400">
+                    <Sparkles className="w-4 h-4" />
+                  </span>
+                  <div>
+                    <strong className="text-white">Motor de Heurísticas Táticas Ativo:</strong>
+                    <span className="text-amber-300 ml-1">
+                      Cota de API gratuita diária atingida. O Coach segue analisando posições, timings de runas e sugerindo counter-builds localmente.
+                    </span>
+                  </div>
+                </div>
+                <span className="text-[10px] font-mono bg-black/60 border border-amber-500/30 px-2.5 py-1 rounded-lg text-amber-300 shrink-0 font-bold">
+                  Heurística 100% Ativa
+                </span>
+              </div>
+            )}
+
             {/* Split Layout: Screen Monitor (Left 7 cols) + Live Tactical Intelligence (Right 5 cols) */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
               {/* Left Column (7 cols): Live Screen & OpenCV Canvas */}
@@ -609,10 +667,11 @@ export default function App() {
                   setIsRealLiveCapturing={setIsRealLiveCapturing}
                 />
 
-                {/* Objective Timers on bottom left */}
+                {/* Objective Timers on bottom left (Only ticks and alerts when game screen is live) */}
                 <SpawnsAndTimersAlert
                   voiceEnabled={voiceEnabled}
-                  onVoiceCallout={(t) => triggerVoiceCallout(t, 'WARNING')}
+                  isLiveGameActive={isRealLiveCapturing}
+                  onVoiceCallout={(t) => triggerVoiceCallout(t, 'WARNING', true)}
                 />
               </div>
 
@@ -623,7 +682,7 @@ export default function App() {
                   currentCallout={currentCallout}
                   calloutHistory={calloutHistory}
                   voiceEnabled={voiceEnabled}
-                  onReplayVoice={(text) => triggerVoiceCallout(text, currentCallout?.urgency || 'WARNING')}
+                  onReplayVoice={(text) => triggerVoiceCallout(text, currentCallout?.urgency || 'WARNING', true)}
                   heroName={activeHeroName}
                 />
 

@@ -21,19 +21,30 @@ interface SpawnsAndTimersAlertProps {
   initialSeconds?: number;
   voiceEnabled: boolean;
   onVoiceCallout?: (text: string) => void;
+  isLiveGameActive?: boolean;
 }
 
 export const SpawnsAndTimersAlert: React.FC<SpawnsAndTimersAlertProps> = ({
-  initialSeconds = 765, // 12:45 default demo time
+  initialSeconds = 0,
   voiceEnabled,
   onVoiceCallout,
+  isLiveGameActive = false,
 }) => {
   const [gameSeconds, setGameSeconds] = useState<number>(initialSeconds);
-  const [isRunning, setIsRunning] = useState<boolean>(true);
+  const [isRunning, setIsRunning] = useState<boolean>(isLiveGameActive);
   const [voiceAlertsEnabled, setVoiceAlertsEnabled] = useState<boolean>(true);
   const [lastAlertFired, setLastAlertFired] = useState<string>('');
 
   const lastNotifiedRef = useRef<{ [key: string]: number }>({});
+
+  // Sync clock running state with live game screen capture
+  useEffect(() => {
+    setIsRunning(isLiveGameActive);
+    if (!isLiveGameActive) {
+      // Clear alert history when not in game
+      lastNotifiedRef.current = {};
+    }
+  }, [isLiveGameActive]);
 
   // Clock runner
   useEffect(() => {
@@ -81,10 +92,10 @@ export const SpawnsAndTimersAlert: React.FC<SpawnsAndTimersAlertProps> = ({
   const secondsToDayNightSwitch = 300 - secondsIntoDayNight;
 
   // ----------------------------------------------------
-  // AUTOMATIC AUDIO & VOICE PRE-SPAWN ALERTS
+  // AUTOMATIC AUDIO & VOICE PRE-SPAWN ALERTS (Only during live game session!)
   // ----------------------------------------------------
   useEffect(() => {
-    if (!voiceAlertsEnabled) return;
+    if (!isLiveGameActive || !voiceAlertsEnabled) return;
 
     const fireAlert = (key: string, text: string, type: 'critical' | 'warning' | 'objective' = 'objective') => {
       // Prevent duplicate firing within 30 seconds for the same event
@@ -127,7 +138,7 @@ export const SpawnsAndTimersAlert: React.FC<SpawnsAndTimersAlertProps> = ({
     if (mins >= 1 && secondsIntoMinute === 53) {
       fireAlert('camp_stack_now', 'PUXE O CAMPO AGORA aos 53 para stackar!', 'critical');
     }
-  }, [gameSeconds, secondsToPowerRune, secondsToWisdomRune, secondsToLotus, secondsIntoMinute, mins, voiceAlertsEnabled, voiceEnabled, onVoiceCallout]);
+  }, [gameSeconds, secondsToPowerRune, secondsToWisdomRune, secondsToLotus, secondsIntoMinute, mins, voiceAlertsEnabled, voiceEnabled, isLiveGameActive, onVoiceCallout]);
 
   const formatCountdown = (totalSecs: number) => {
     const m = Math.floor(totalSecs / 60);

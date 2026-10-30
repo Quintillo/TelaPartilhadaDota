@@ -58,15 +58,15 @@ export const LiveScreenMonitor: React.FC<LiveScreenMonitorProps> = ({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationFrameRef = useRef<number | null>(null);
 
-  const [streamSource, setStreamSource] = useState<'screen' | 'demo'>('demo');
+  const [streamSource, setStreamSource] = useState<'standby' | 'screen' | 'demo'>('standby');
   const [visionFilter, setVisionFilter] = useState<VisionFilter>('normal');
   const [showHudBoxes, setShowHudBoxes] = useState<boolean>(true);
-  const [motionActivity, setMotionActivity] = useState<number>(35);
-  const [fps, setFps] = useState<number>(30);
+  const [motionActivity, setMotionActivity] = useState<number>(0);
+  const [fps, setFps] = useState<number>(0);
   const [lastAnalysisCountdown, setLastAnalysisCountdown] = useState<number>(analysisIntervalSec);
   const [captureNotice, setCaptureNotice] = useState<string | null>(null);
 
-  // Setup offscreen canvas simulation for Demo Scenarios when not live sharing
+  // Setup offscreen canvas simulation for Demo Scenarios when user explicitly tests a scenario
   useEffect(() => {
     if (streamSource === 'demo') {
       const canvas = canvasRef.current;
@@ -119,8 +119,8 @@ export const LiveScreenMonitor: React.FC<LiveScreenMonitorProps> = ({
       setIsRealLiveCapturing(true);
       setStreamSource('screen');
 
-      // Notify user by voice
-      cvEngine.speakCallout('Tela do Dota 2 conectada com sucesso. Acompanhando seu jogo ao vivo em tempo real!', {
+      // Welcoming message spoken like a real human coach sitting next to you
+      cvEngine.speakCallout('Treinador conectado! Estou de olho na sua partida de Dota 2 ao vivo. Boa sorte!', {
         enabled: voiceEnabled,
         rate: 1.15,
         lang: 'pt-BR',
@@ -134,11 +134,11 @@ export const LiveScreenMonitor: React.FC<LiveScreenMonitorProps> = ({
       // Trigger initial real live frame capture after short delay
       setTimeout(() => {
         triggerInstantCapture(true);
-      }, 1000);
+      }, 1500);
     } catch (err: any) {
       console.warn('Screen capture cancelled or error:', err.message);
       if (err.name === 'NotAllowedError') {
-        setCaptureNotice('Permissão de captura de tela não concedida ou cancelada. Você pode selecionar a janela do jogo novamente ou utilizar os cenários simulados abaixo.');
+        setCaptureNotice('Permissão de captura de tela cancelada. Quando estiver pronto com o Dota 2 aberto, clique novamente em "Conectar Tela do Jogo ao Vivo".');
       } else {
         setCaptureNotice(`Aviso de captura: ${err.message || 'Verifique as permissões de vídeo do seu navegador.'}`);
       }
@@ -146,14 +146,26 @@ export const LiveScreenMonitor: React.FC<LiveScreenMonitorProps> = ({
   };
 
   const stopScreenCapture = () => {
+    cvEngine.stopSpeaking();
     if (videoRef.current && videoRef.current.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
       stream.getTracks().forEach((track) => track.stop());
       videoRef.current.srcObject = null;
     }
     setIsRealLiveCapturing(false);
-    setStreamSource('demo');
+    setStreamSource('standby');
+    setMotionActivity(0);
+    setFps(0);
   };
+
+  const lastTelemetryUpdateRef = useRef<number>(0);
+  const countdownRef = useRef<number>(analysisIntervalSec);
+
+  // Keep countdownRef in sync with prop changes
+  useEffect(() => {
+    countdownRef.current = analysisIntervalSec;
+    setLastAnalysisCountdown(analysisIntervalSec);
+  }, [analysisIntervalSec]);
 
   // Continuous loop rendering screen or video to canvas
   const renderFrameLoop = useCallback(() => {
@@ -165,8 +177,12 @@ export const LiveScreenMonitor: React.FC<LiveScreenMonitorProps> = ({
       if (canvas.height !== 720) canvas.height = 720;
 
       const { motionScore } = cvEngine.processFrame(video, canvas, visionFilter, showHudBoxes);
-      setMotionActivity(motionScore);
-      setFps(30);
+      const now = performance.now();
+      if (now - lastTelemetryUpdateRef.current > 600) {
+        lastTelemetryUpdateRef.current = now;
+        setMotionActivity(motionScore);
+        setFps(30);
+      }
     }
     animationFrameRef.current = requestAnimationFrame(renderFrameLoop);
   }, [streamSource, visionFilter, showHudBoxes]);
@@ -180,22 +196,32 @@ export const LiveScreenMonitor: React.FC<LiveScreenMonitorProps> = ({
     };
   }, [renderFrameLoop]);
 
-  // Periodic Auto-Analysis Interval Timer
+  // Periodic Auto-Analysis Interval Timer:
+  // CRITICAL: ONLY runs when the player is actively sharing their live Dota 2 screen!
+  // No loops, no countdowns, and no speech when screen is not shared.
   useEffect(() => {
-    if (!autoAnalyze) return;
+    if (!isRealLiveCapturing || !autoAnalyze) {
+      countdownRef.current = analysisIntervalSec;
+      setLastAnalysisCountdown(analysisIntervalSec);
+      return;
+    }
+
+    countdownRef.current = analysisIntervalSec;
+    setLastAnalysisCountdown(analysisIntervalSec);
 
     const timer = setInterval(() => {
-      setLastAnalysisCountdown((prev) => {
-        if (prev <= 1) {
-          triggerInstantCapture(streamSource === 'screen');
-          return analysisIntervalSec;
-        }
-        return prev - 1;
-      });
+      countdownRef.current -= 1;
+      if (countdownRef.current <= 0) {
+        countdownRef.current = analysisIntervalSec;
+        setLastAnalysisCountdown(analysisIntervalSec);
+        triggerInstantCapture(true);
+      } else {
+        setLastAnalysisCountdown(countdownRef.current);
+      }
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [autoAnalyze, analysisIntervalSec, streamSource]);
+  }, [isRealLiveCapturing, autoAnalyze, analysisIntervalSec]);
 
   // Trigger snapshot and send to Gemini Vision Coach
   const triggerInstantCapture = (isRealLive?: boolean) => {
@@ -300,14 +326,18 @@ export const LiveScreenMonitor: React.FC<LiveScreenMonitorProps> = ({
             type="button"
             onClick={onToggleAutoAnalyze}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border font-semibold cursor-pointer transition-colors ${
-              autoAnalyze
+              autoAnalyze && isRealLiveCapturing
                 ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
                 : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
             }`}
-            title="Análise contínua em tempo real (Tecla P)"
+            title="Análise contínua da tela (Tecla P) — Ativa apenas com tela compartilhada"
           >
-            <Radio className={`w-3.5 h-3.5 ${autoAnalyze ? 'text-amber-400 animate-pulse' : ''}`} />
-            <span>Loop IA ({lastAnalysisCountdown}s)</span>
+            <Radio className={`w-3.5 h-3.5 ${autoAnalyze && isRealLiveCapturing ? 'text-amber-400 animate-pulse' : ''}`} />
+            <span>
+              {isRealLiveCapturing
+                ? `Loop Ativo (${lastAnalysisCountdown}s)`
+                : 'Loop: Aguardando Tela'}
+            </span>
           </button>
 
           {/* Voice Coach Sound Toggle */}
@@ -387,21 +417,97 @@ export const LiveScreenMonitor: React.FC<LiveScreenMonitorProps> = ({
         {/* The Live Render Canvas with OpenCV / Vision overlay */}
         <canvas
           ref={canvasRef}
-          className="w-full h-full object-contain block"
+          className={`w-full h-full object-contain block ${streamSource === 'standby' ? 'opacity-10' : 'opacity-100'}`}
         />
 
-        {/* Live Standby Screen Prompt if not sharing yet */}
-        {!isRealLiveCapturing && streamSource === 'demo' && (
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px] flex flex-col items-center justify-center p-6 text-center z-10 pointer-events-none">
-            <div className="w-16 h-16 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 mb-3 shadow-xl">
-              <Monitor className="w-8 h-8" />
+        {/* Live Standby Screen Prompt when not sharing yet */}
+        {streamSource === 'standby' && !isRealLiveCapturing && (
+          <div className="absolute inset-0 bg-[#07090e]/95 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center z-20">
+            <div className="relative mb-3">
+              <div className="w-16 h-16 md:w-20 md:h-20 rounded-2xl bg-gradient-to-br from-emerald-500/20 via-teal-500/10 to-transparent border-2 border-emerald-500/40 flex items-center justify-center text-emerald-400 shadow-2xl">
+                <Monitor className="w-8 h-8 md:w-10 md:h-10 animate-pulse" />
+              </div>
+              <span className="absolute -top-1 -right-1 flex h-4 w-4">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-4 w-4 bg-emerald-500" />
+              </span>
             </div>
-            <h4 className="text-lg md:text-xl font-bold font-['Cinzel',serif] text-white">
-              Pronto para Assistir sua Partida ao Vivo
-            </h4>
-            <p className="text-xs md:text-sm text-slate-300 max-w-md mt-1 leading-relaxed">
-              Clique no botão verde acima para compartilhar a janela do <strong>Dota 2</strong>. A IA analisará cada frame em tempo real e falará dicas no seu fone de ouvido!
+
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-900/90 border border-slate-700 text-xs font-mono text-emerald-400 mb-2">
+              <Radio className="w-3.5 h-3.5 animate-pulse" />
+              <span>TREINADOR EM ESPERA (SILENCIOSO)</span>
+            </div>
+
+            <h3 className="text-lg md:text-2xl font-black font-['Cinzel',serif] text-white tracking-wide">
+              Pronto para Assistir sua Partida de Dota 2
+            </h3>
+            <p className="text-xs md:text-sm text-slate-300 max-w-lg mt-1.5 leading-relaxed">
+              O Treinador só fala quando a tela do jogo estiver conectada. A IA assistirá seus movimentos, minimapa e inventário, dando callouts táticos como um amigo experiente ao seu lado.
             </p>
+
+            {/* Main Action Button */}
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={startScreenCapture}
+                className="flex items-center gap-2.5 px-6 py-3 rounded-xl text-xs md:text-sm font-black bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-600 hover:from-emerald-400 hover:to-teal-400 text-black shadow-xl shadow-emerald-950/60 cursor-pointer transform hover:scale-[1.02] active:scale-[0.98] transition-all"
+              >
+                <Radio className="w-4 h-4 text-black animate-pulse" />
+                <span>INICIAR TREINADOR (COMPARTILHAR JANELA DO DOTA 2)</span>
+              </button>
+            </div>
+
+            {/* Quick 3-Step Guide */}
+            <div className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-2.5 max-w-xl text-left w-full">
+              <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 text-[11px]">
+                <div className="font-bold text-amber-300 flex items-center gap-1.5 mb-0.5">
+                  <span className="w-4 h-4 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center text-[10px] font-black">1</span>
+                  Abra o Dota 2
+                </div>
+                <div className="text-slate-400 text-[10px] leading-tight">
+                  No modo Janela Sem Bordas (Borderless Windowed).
+                </div>
+              </div>
+
+              <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 text-[11px]">
+                <div className="font-bold text-emerald-300 flex items-center gap-1.5 mb-0.5">
+                  <span className="w-4 h-4 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-[10px] font-black">2</span>
+                  Conecte a Tela
+                </div>
+                <div className="text-slate-400 text-[10px] leading-tight">
+                  Clique no botão verde acima e escolha a janela.
+                </div>
+              </div>
+
+              <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 text-[11px]">
+                <div className="font-bold text-cyan-300 flex items-center gap-1.5 mb-0.5">
+                  <span className="w-4 h-4 rounded-full bg-cyan-500/20 text-cyan-400 flex items-center justify-center text-[10px] font-black">3</span>
+                  Receba Dicas
+                </div>
+                <div className="text-slate-400 text-[10px] leading-tight">
+                  O Coach falará alertas de gank, runas e builds!
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Demo Mode Notice Banner inside frame */}
+        {streamSource === 'demo' && !isRealLiveCapturing && (
+          <div className="absolute top-16 left-3 right-3 p-2.5 rounded-xl bg-slate-900/90 border border-amber-500/40 backdrop-blur-md z-25 flex items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 text-amber-200">
+              <Camera className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>
+                <strong>Modo Demonstração (Frame Simulado):</strong> Teste pontual estático. Loop de voz automático desativado.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setStreamSource('standby')}
+              className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-bold text-[10px] cursor-pointer"
+            >
+              Voltar ao Modo ao Vivo
+            </button>
           </div>
         )}
 
@@ -411,10 +517,10 @@ export const LiveScreenMonitor: React.FC<LiveScreenMonitorProps> = ({
         >
           <div className="flex items-center gap-2.5 min-w-0">
             <span className={`px-2 py-0.5 rounded text-[10px] tracking-wider uppercase shrink-0 ${currentUrgencyStyle.badge}`}>
-              {currentUrgencyStyle.label}
+              {isRealLiveCapturing ? currentUrgencyStyle.label : 'EM ESPERA'}
             </span>
             <p className="text-xs md:text-sm font-bold truncate">
-              "{latestCallout || 'Coach ativo. Monitorando sua tela ao vivo...'}"
+              "{isRealLiveCapturing ? (latestCallout || 'Coach monitorando sua tela ao vivo...') : 'Treinador pronto em espera. Conecte sua tela do Dota 2.'}"
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -427,69 +533,73 @@ export const LiveScreenMonitor: React.FC<LiveScreenMonitorProps> = ({
         </div>
 
         {/* Floating Live Telemetry Badge (Bottom-Right) */}
-        <div className="absolute bottom-3 right-3 bg-black/85 backdrop-blur-md border border-slate-800 px-3 py-1.5 rounded-lg flex items-center gap-3 text-[11px] font-mono text-slate-300 z-20">
-          <div className="flex items-center gap-1">
-            <span className={`w-2 h-2 rounded-full ${isRealLiveCapturing ? 'bg-red-500 animate-ping' : 'bg-emerald-400'}`} />
-            <span>{isRealLiveCapturing ? 'TELA AO VIVO' : 'STREAM DEMO'}</span>
+        {isRealLiveCapturing && (
+          <div className="absolute bottom-3 right-3 bg-black/85 backdrop-blur-md border border-slate-800 px-3 py-1.5 rounded-lg flex items-center gap-3 text-[11px] font-mono text-slate-300 z-20">
+            <div className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
+              <span>TELA AO VIVO</span>
+            </div>
+            <div className="w-px h-3 bg-slate-700" />
+            <div className="flex items-center gap-1 text-cyan-300">
+              <Activity className="w-3.5 h-3.5" />
+              <span>Atividade: {motionActivity}%</span>
+            </div>
           </div>
-          <div className="w-px h-3 bg-slate-700" />
-          <div className="flex items-center gap-1 text-cyan-300">
-            <Activity className="w-3.5 h-3.5" />
-            <span>Atividade: {motionActivity}%</span>
-          </div>
-        </div>
+        )}
 
         {/* Floating Vision Filter Switcher (Bottom-Left) */}
-        <div className="absolute bottom-3 left-3 bg-black/85 backdrop-blur-md border border-slate-800 p-1 rounded-xl flex items-center gap-1 z-20 text-[11px]">
-          <span className="px-2 text-slate-400 font-semibold flex items-center gap-1">
-            <Eye className="w-3.5 h-3.5 text-cyan-400" /> OpenCV:
-          </span>
-          <button
-            type="button"
-            onClick={() => setVisionFilter('normal')}
-            className={`px-2 py-1 rounded-lg font-bold cursor-pointer transition-colors ${
-              visionFilter === 'normal'
-                ? 'bg-cyan-500 text-black'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            Normal
-          </button>
-          <button
-            type="button"
-            onClick={() => setVisionFilter('edges')}
-            className={`px-2 py-1 rounded-lg font-bold cursor-pointer transition-colors ${
-              visionFilter === 'edges'
-                ? 'bg-cyan-500 text-black'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            Bordas
-          </button>
-          <button
-            type="button"
-            onClick={() => setVisionFilter('color_mask')}
-            className={`px-2 py-1 rounded-lg font-bold cursor-pointer transition-colors ${
-              visionFilter === 'color_mask'
-                ? 'bg-cyan-500 text-black'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            Cores
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowHudBoxes(!showHudBoxes)}
-            className={`px-2 py-1 rounded-lg font-bold cursor-pointer border transition-colors ${
-              showHudBoxes
-                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                : 'border-slate-800 text-slate-500'
-            }`}
-            title="Caixas de detecção de HUD (Minimap, HP/Mana, Relógio)"
-          >
-            ROIs
-          </button>
-        </div>
+        {isRealLiveCapturing && (
+          <div className="absolute bottom-3 left-3 bg-black/85 backdrop-blur-md border border-slate-800 p-1 rounded-xl flex items-center gap-1 z-20 text-[11px]">
+            <span className="px-2 text-slate-400 font-semibold flex items-center gap-1">
+              <Eye className="w-3.5 h-3.5 text-cyan-400" /> OpenCV:
+            </span>
+            <button
+              type="button"
+              onClick={() => setVisionFilter('normal')}
+              className={`px-2 py-1 rounded-lg font-bold cursor-pointer transition-colors ${
+                visionFilter === 'normal'
+                  ? 'bg-cyan-500 text-black'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Normal
+            </button>
+            <button
+              type="button"
+              onClick={() => setVisionFilter('edges')}
+              className={`px-2 py-1 rounded-lg font-bold cursor-pointer transition-colors ${
+                visionFilter === 'edges'
+                  ? 'bg-cyan-500 text-black'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Bordas
+            </button>
+            <button
+              type="button"
+              onClick={() => setVisionFilter('color_mask')}
+              className={`px-2 py-1 rounded-lg font-bold cursor-pointer transition-colors ${
+                visionFilter === 'color_mask'
+                  ? 'bg-cyan-500 text-black'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Cores
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowHudBoxes(!showHudBoxes)}
+              className={`px-2 py-1 rounded-lg font-bold cursor-pointer border transition-colors ${
+                showHudBoxes
+                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                  : 'border-slate-800 text-slate-500'
+              }`}
+              title="Caixas de detecção de HUD (Minimap, HP/Mana, Relógio)"
+            >
+              ROIs
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Demo Gameplay Scenarios (For Quick Tests without Dota 2 open) */}
@@ -497,10 +607,10 @@ export const LiveScreenMonitor: React.FC<LiveScreenMonitorProps> = ({
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
           <span className="text-xs uppercase font-bold tracking-wider text-slate-300 flex items-center gap-1.5">
             <Camera className="w-3.5 h-3.5 text-amber-400" />
-            Cenários de Teste (Para testar o Coach antes de abrir o Dota 2):
+            Cenários de Teste (Simular Frame sem abrir o Dota 2):
           </span>
           <span className="text-[11px] text-slate-400">
-            {isRealLiveCapturing ? 'Captura de tela real ativa (demo em pausa)' : 'Clique para simular um frame'}
+            {isRealLiveCapturing ? 'Captura de tela real ativa' : 'Clique para carregar e testar um frame estático'}
           </span>
         </div>
 
@@ -513,6 +623,7 @@ export const LiveScreenMonitor: React.FC<LiveScreenMonitorProps> = ({
                 type="button"
                 onClick={() => {
                   stopScreenCapture();
+                  setStreamSource('demo');
                   onSelectScenario(scenario);
                 }}
                 className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
