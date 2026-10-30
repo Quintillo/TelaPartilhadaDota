@@ -1,0 +1,6 @@
+{
+  "name": "Dota AI Live Coach",
+  "description": "Treinador de IA ao vivo para Dota 2 com captura de tela em tempo real, visão computacional, estatísticas do banco de dados e callouts táticos por voz.",
+  "requestFramePermissions": ["display-capture"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

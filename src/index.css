@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+:root {
+  --hud-border: rgba(239, 68, 68, 0.45);
+  --hud-border-glow: rgba(239, 68, 68, 0.2);
+  --hud-bg-gradient: radial-gradient(ellipse at top, #2b0b0b 0%, #0d0f17 55%, #06070a 100%);
+  --hud-card-bg: #111624;
+  --hud-accent: #f59e0b;
+  --hud-accent-hover: #fbbf24;
+  --hud-badge-bg: rgba(239, 68, 68, 0.2);
+  --hud-badge-text: #f87171;
+  --hud-radar-border: #ef4444;
+}
+
+body {
+  background: var(--hud-bg-gradient);
+  background-attachment: fixed;
+  color: #f1f5f9;
+  min-height: 100vh;
+  transition: background 0.4s ease, border-color 0.4s ease;
+}
+
+/* Dynamic themed containers */
+.hud-card {
+  background-color: var(--hud-card-bg);
+  border-color: var(--hud-border);
+  box-shadow: 0 10px 25px -5px var(--hud-border-glow);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease, background-color 0.3s ease;
+}
+
+.hud-border {
+  border-color: var(--hud-border) !important;
+}
+
+.hud-accent-text {
+  color: var(--hud-accent) !important;
+}
+
+@layer utilities {
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .animate-fadeIn {
+    animation: fadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+}
+
+/* Custom dark scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #090c10;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1f293d;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
